@@ -1,4 +1,3 @@
-package tests
 
 import (
 	"errors"
@@ -11,10 +10,11 @@ import (
 func TestPrintAllLogs(t *testing.T) {
 	color.NoColor = false
 
-	t.Log("Esecuzione log demo:\n")
+	t.Log("Running log demo:\n")
 
-	log.Message("Questo è un messaggio informativo")
-	log.Warning("Questo è un warning")
-	log.Error("Questo è un errore", errors.New("qualcosa è andato storto"))
-	log.Success("Operazione completata con successo")
+	log.Message("This is an informational message")
+	log.Warning("This is a warning")
+	log.Error("This is an error", errors.New("something went wrong"))
+	log.Error("This is an error without an error")
+	log.Success("Operation completed successfully")
 }

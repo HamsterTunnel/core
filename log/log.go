@@ -19,7 +19,11 @@ func getTime() string {
 }
 
 func Error(msg string, err error) {
-	fmt.Printf("[%s] %s (%v)\n", getTime(), errorColor("[ERROR] ")+msg, err)
+	if err != nil {
+		fmt.Printf("[%s] %s (%v)\n", getTime(), errorColor("[ERROR] ")+msg, err)
+	} else {
+		fmt.Printf("[%s] %s \n", getTime(), errorColor("[ERROR] ")+msg)
+	}
 }
 
 func Warning(msg string) {
