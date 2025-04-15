@@ -11,6 +11,7 @@ var (
 	errorColor   = color.New(color.FgRed).SprintFunc()
 	warningColor = color.New(color.FgYellow).SprintFunc()
 	infoColor    = color.New(color.FgBlue).SprintFunc()
+	MessageColor = color.New(color.FgWhite).SprintFunc()
 	successColor = color.New(color.FgGreen).SprintFunc()
 )
 
@@ -31,6 +32,10 @@ func Warning(msg string) {
 }
 
 func Message(msg string) {
+	fmt.Printf("[%s] %s\n", getTime(), MessageColor("[Message] ")+msg)
+}
+
+func Info(msg string) {
 	fmt.Printf("[%s] %s\n", getTime(), infoColor("[INFO] ")+msg)
 }
 
