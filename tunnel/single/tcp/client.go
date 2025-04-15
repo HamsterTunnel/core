@@ -1,74 +1,93 @@
 package tunnel
 
 import (
-	"errors"
+	"fmt"
 	"io"
-	"log"
 	"net"
+	"sync"
+	"time"
+
+	"github.com/HamsterTunnel/core/log"
 )
 
-func forwardData(dst, src net.Conn, direction string, done chan<- error) {
+type SingleClient struct {
+	tunnelConn net.Conn
+	localConn  net.Conn
+	lock       sync.RWMutex
+}
+
+func NewSingleClient() *SingleClient {
+	return &SingleClient{
+		tunnelConn: nil,
+		localConn:  nil,
+	}
+}
+
+func (sc *SingleClient) connectToServer(serverAddr string) error {
+	conn, err := net.Dial("tcp", serverAddr)
+	if err != nil {
+		log.Error(fmt.Sprintf("Unable to connect to tunnel at %s", serverAddr), err)
+		return err
+	}
+	sc.lock.Lock()
+	sc.tunnelConn = conn
+	sc.lock.Unlock()
+	log.Success(fmt.Sprintf("Connected to tunnel at %s", serverAddr))
+	return nil
+}
+
+func (sc *SingleClient) connectToLocal(localPort string) error {
+	conn, err := net.Dial("tcp", localPort)
+	if err != nil {
+		log.Error(fmt.Sprintf("Unable to connect to local service at %s", localPort), err)
+		return err
+	}
+	sc.lock.Lock()
+	sc.localConn = conn
+	sc.lock.Unlock()
+	log.Success(fmt.Sprintf("Connected to local service at %s", localPort))
+	return nil
+}
+
+func (sc *SingleClient) forwardData(dst net.Conn, src net.Conn, done chan<- error) {
 	_, err := io.Copy(dst, src)
-	if err != nil && !errors.Is(err, net.ErrClosed) {
-		log.Printf("Error forwarding data %s: %v", direction, err)
-		done <- err
+	if err != nil && err.Error() != "use of closed network connection" {
+		log.Error(fmt.Sprintf("Error forwarding from %s to %s", src.RemoteAddr(), dst.RemoteAddr()), err)
+	} else if err == nil {
+		log.Message(fmt.Sprintf("Finished forwarding from %s to %s", src.RemoteAddr(), dst.RemoteAddr()))
+	}
+	done <- err
+}
+
+func (sc *SingleClient) tunnelData() {
+	done := make(chan error, 2)
+
+	go sc.forwardData(sc.tunnelConn, sc.localConn, done) // local ➝ tunnel
+	go sc.forwardData(sc.localConn, sc.tunnelConn, done) // tunnel ➝ local
+
+	err := <-done
+	if err != nil {
+		log.Error("Tunnel closed with error", err)
 	} else {
-		log.Printf("Connection closed normally %s", direction)
-		done <- nil
+		log.Message("Tunnel closed gracefully.")
 	}
+
+	sc.tunnelConn.Close()
+	sc.localConn.Close()
 }
 
-func StartLocalTCPTunnel(remotePort, servicePort string) {
+func (sc *SingleClient) Start(tunnelAddr, localAddr string) {
 	for {
-		log.Println("Attempting to connect to remote and local services...")
-
-		// Try to connect to remote service
-		remoteConn, err := net.Dial("tcp", remotePort)
-		if err != nil {
-			log.Printf("Unable to connect to remote proxy on port %s: %v", remotePort, err)
-			// Retry immediately if connection fails
+		if err := sc.connectToServer(tunnelAddr); err != nil {
+			time.Sleep(2 * time.Second)
 			continue
 		}
-		log.Printf("Connected to remote proxy: %s", remotePort)
-
-		// Try to connect to local service
-		serviceConn, err := net.Dial("tcp", servicePort)
-		if err != nil {
-			log.Printf("Error connecting to local service on port %s: %v", servicePort, err)
-			remoteConn.Close() // Close remoteConn as we failed to connect to the service
-			// Retry immediately if connection fails
+		if err := sc.connectToLocal(localAddr); err != nil {
+			sc.tunnelConn.Close()
+			time.Sleep(2 * time.Second)
 			continue
 		}
-		log.Printf("Connected to local service: %s", servicePort)
-
-		// Channel to receive the results of the two forwarding directions
-		errChan := make(chan error, 2)
-
-		// Start forwarding data in both directions
-		go forwardData(serviceConn, remoteConn, "remote -> service", errChan)
-		go forwardData(remoteConn, serviceConn, "service -> remote", errChan)
-
-		// Wait for one of the connections to close and handle reconnection
-		var finalErr error
-		for {
-			if err := <-errChan; err != nil {
-				finalErr = err
-				break // Exit the loop as one of the connections has failed or closed
-			}
-		}
-
-		// Close connections after forwarding is done
-		serviceConn.Close()
-		remoteConn.Close()
-
-		// Log the final outcome and retry if needed
-		if finalErr != nil {
-			log.Printf("Forwarding terminated with error: %v", finalErr)
-		} else {
-			log.Println("Forwarding terminated normally")
-		}
-
-		// After the forwarding has finished, attempt to reconnect
-		log.Println("Attempting to reconnect...")
+		sc.tunnelData()
 	}
 }
+

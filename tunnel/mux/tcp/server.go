@@ -32,11 +32,11 @@ func NewSMultiplexer() *SMultiplexer {
 	}
 }
 
-func (m *SMultiplexer) Start(userPort, clienPort string) {
-	if tunnelConn, err := listen(clienPort, "client"); err != nil {
-		log.Error(fmt.Sprintf("Client fail to connect on port %s", clienPort), err)
+func (m *SMultiplexer) Start(userPort, clientPort string) {
+	if tunnelConn, err := listen(clientPort, "client"); err != nil {
+		log.Error(fmt.Sprintf("Client fail to connect on port %s", clientPort), err)
 	} else {
-		log.Success(fmt.Sprintf("Client connected on port %s", clienPort))
+		log.Success(fmt.Sprintf("Client connected on port %s", clientPort))
 		m.lock.Lock()
 		m.tunnelConn = tunnelConn
 		m.isConnected = true

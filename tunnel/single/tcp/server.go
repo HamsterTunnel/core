@@ -1,86 +1,99 @@
 package tunnel
 
 import (
+	"fmt"
 	"io"
-	"log"
 	"net"
+	"sync"
+
+	"github.com/HamsterTunnel/core/log"
 )
 
-func forwarData(clientConn, userConn net.Conn, done chan<- error) {
-	_, err := io.Copy(clientConn, userConn)
-	if err != nil {
-		if err.Error() == "use of closed network connection" {
-			log.Println("Connection closed by user while forwarding data to client.")
-		} else {
-			log.Printf("Error forwarding data from user to client: %v", err)
-		}
-		done <- err // Invia l'errore (o nil) al canale
-		return
-	}
-	log.Println("Data forwarding from user to client completed.")
-	done <- nil // Indica che tutto è andato a buon fine
+type SingleServer struct {
+	tunnelConn net.Conn
+	userConn   net.Conn
+	lock       sync.RWMutex
 }
 
-func handleClientConnection(clientConn net.Conn, userListener net.Listener) {
-	defer clientConn.Close()
-
-	for {
-		userConn, err := userListener.Accept()
-		if err != nil {
-			log.Printf("Error accepting connection from user: %v", err)
-			continue
-		}
-
-		log.Println("Connection established with user.")
-		done := make(chan error, 2) // Canale per segnare la fine di entrambe le operazioni di forwarding
-
-		// Forward dati in entrambe le direzioni
-		go forwarData(clientConn, userConn, done)
-		go forwarData(userConn, clientConn, done)
-
-		// Attendi la chiusura di entrambe le direzioni
-		var finalErr error
-		for i := 0; i < 2; i++ {
-			err := <-done
-			if err != nil && finalErr == nil {
-				finalErr = err // Se c'è un errore, lo memorizziamo
-			}
-		}
-
-		// Dopo che entrambe le operazioni sono terminate, riavvia l'ascolto
-		if finalErr != nil {
-			log.Printf("Forwarding terminated with error: %v", finalErr)
-		} else {
-			log.Println("Forwarding completed successfully.")
-		}
+func NewSingleServer() *SingleServer {
+	return &SingleServer{
+		tunnelConn: nil,
+		userConn:   nil,
 	}
 }
 
-func StartRemoteTCPTunnel(clientPort, userPort string) error {
-	clientListener, err := net.Listen("tcp", ":"+clientPort)
+func (su *SingleServer) listenForClient(clientPort string) {
+	clientListener, err := net.Listen("tcp", clientPort)
 	if err != nil {
-		log.Fatalf("Unable to start listener on public port %s: %v", clientPort, err)
+		log.Error(fmt.Sprintf("Unable to start listener on %s", clientPort), err)
+	} else {
+		log.Success(fmt.Sprintf("Listening for Client on %s", clientPort))
 	}
 	defer clientListener.Close()
 
-	userListener, err := net.Listen("tcp", ":"+userPort)
+	if clientConn, err := clientListener.Accept(); err != nil {
+		log.Error(fmt.Sprintf("Unable to Accpet on %s", clientPort), err)
+	} else {
+		su.lock.Lock()
+		su.tunnelConn = clientConn
+		su.lock.Unlock()
+		log.Success(fmt.Sprintf("Client connected on %s", clientPort))
+	}
+}
+
+func (su *SingleServer) listenForUser(userPort string) error {
+	userListener, err := net.Listen("tcp", userPort)
 	if err != nil {
-		log.Fatalf("Unable to start listener on user port %s: %v", userPort, err)
+		log.Error(fmt.Sprintf("Unable to start listener on %s", userPort), err)
+		return err
+	} else {
+		log.Success(fmt.Sprintf("Listening for User on %s", userPort))
 	}
 	defer userListener.Close()
 
-	log.Printf("Remote proxy listening on ports %s (client) and %s (user)", clientPort, userPort)
+	if userConn, err := userListener.Accept(); err != nil {
+		log.Error(fmt.Sprintf("Unable to Accpet on %s", userPort), err)
+		return err
+	} else {
+		su.lock.Lock()
+		su.userConn = userConn
+		su.lock.Unlock()
+		log.Success(fmt.Sprintf("User connected on %s", userPort))
+		return nil
+	}
+}
 
+func (su *SingleServer) forwardData(dst net.Conn, src net.Conn, done chan<- error) {
+	_, err := io.Copy(dst, src)
+	if err != nil && err.Error() != "use of closed network connection" {
+		log.Error(fmt.Sprintf("Error forwarding from %s to %s", src.RemoteAddr(), dst.RemoteAddr()), err)
+	} else if err == nil {
+		log.Message(fmt.Sprintf("Finished forwarding from %s to %s", src.RemoteAddr(), dst.RemoteAddr()))
+	}
+	done <- err
+}
+
+func (su *SingleServer) tunnelData() {
+	done := make(chan error, 2)
+
+	go su.forwardData(su.tunnelConn, su.userConn, done) // user ➝ client
+	go su.forwardData(su.userConn, su.tunnelConn, done) // client ➝ user
+
+	err := <-done
+	if err != nil {
+		log.Error("Tunnel closed with error", err)
+	} else {
+		log.Message("Tunnel closed gracefully.")
+	}
+
+	su.tunnelConn.Close()
+	su.userConn.Close()
+}
+
+func (su *SingleServer) Start(userPort, clientPort string) {
 	for {
-		clientConn, err := clientListener.Accept()
-		if err != nil {
-			log.Printf("Error accepting connection from client: %v", err)
-			continue
-		}
-
-		log.Println("Connection established with client.")
-
-		// Gestisci la connessione del client
-		go handleClientConnection(clientConn, userListener)
+		su.listenForClient(clientPort)
+		su.listenForUser(userPort)
+		su.tunnelData()
 	}
 }
